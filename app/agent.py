@@ -160,9 +160,19 @@ classifier_agent = LlmAgent(
     model="gemini-3.1-flash-lite",
     output_schema=ClassificationResult,
     instruction=(
-        "You are an expert assistant that classifies config generation requests. "
-        "STANDARD means the request uses the default single dbt step template (step_name='run_public_models', with empty dbt_flags). "
-        "NON-STANDARD means the request specifies custom step names, multiple steps, empty steps list, or different dbt flags."
+        "You are an expert assistant that classifies configuration intents.\n\n"
+        "Here is the STANDARD steps configuration template:\n"
+        "```json\n"
+        "[\n"
+        "  {\n"
+        "    \"step_name\": \"run_public_models\",\n"
+        "    \"dbt_flags\": {}\n"
+        "  }\n"
+        "]\n"
+        "```\n\n"
+        "Analyze the user's config_intent:\n"
+        "- If it is fully consistent with this standard template (meaning it doesn't request different steps, custom flags, or omitting steps) -> category must be 'STANDARD'.\n"
+        "- If it implies a deviation (e.g., omitting the public step, using a different step name, adding multiple steps, or specifying custom dbt flags) -> category must be 'NON-STANDARD'."
     )
 )
 
@@ -176,29 +186,36 @@ non_standard_steps_generator = LlmAgent(
     model="gemini-3.1-flash-lite",
     output_schema=CustomStepsList,
     instruction=(
-        "You are an expert helper that generates the steps configuration for a dbt DAG config.json. "
-        "You must generate ONLY the steps list within the dbt config schema. "
-        "Each step must specify a step_name and optional parameters like task_dataset_prefix, "
-        "dbt_invocation_command, or dbt_flags. "
-        "For example, if the ticket requests 'no public step', you should omit the public step or adapt "
-        "the step name/parameters accordingly."
+        "You are an expert helper that generates the steps configuration for a dbt DAG config.json based on the user's intent.\n\n"
+        "Here is the STANDARD steps configuration template for reference:\n"
+        "```json\n"
+        "[\n"
+        "  {\n"
+        "    \"step_name\": \"run_public_models\",\n"
+        "    \"dbt_flags\": {}\n"
+        "  }\n"
+        "]\n"
+        "```\n\n"
+        "Based on the user's intent, produce ONLY the steps list within the Step schema to honor the intent (e.g. omit steps, change step names, add steps, or customize flags). "
+        "Each step must specify a step_name and optional parameters like task_dataset_prefix, dbt_invocation_command, or dbt_flags. "
+        "Do not invent new fields outside the Step schema."
     )
 )
 
 def classify_request(ctx: Context) -> Event:
-    """Pre-classifies the request. If no instruction field is provided, defaults to standard."""
+    """Pre-classifies the request. If no config_intent is provided, defaults to standard."""
     payload_str = ctx.state.get("payload", "")
     try:
         params = json.loads(payload_str)
     except Exception:
         params = {}
         
-    instruction = params.get("instruction") or params.get("ticket_text") or params.get("ticket") or ""
+    config_intent = params.get("config_intent") or ""
     
-    if not instruction.strip():
-        return Event(output={"category": "STANDARD", "reason": "No instruction provided."}, route="standard")
+    if not config_intent.strip():
+        return Event(output={"category": "STANDARD", "reason": "No config_intent provided."}, route="standard")
     
-    return Event(output=instruction, route="llm_classify")
+    return Event(output=config_intent, route="llm_classify")
 
 def handle_classification_result(ctx: Context, node_input: ClassificationResult) -> Event:
     """Handles classification output and routes to standard or non-standard steps generation."""
@@ -208,12 +225,17 @@ def handle_classification_result(ctx: Context, node_input: ClassificationResult)
     if category == "STANDARD":
         return Event(output=ctx.state.get("payload"), route="standard")
     else:
-        instruction = ctx.state.get("payload", "")
+        payload_str = ctx.state.get("payload", "")
+        try:
+            params = json.loads(payload_str)
+        except Exception:
+            params = {}
+        config_intent = params.get("config_intent") or ""
+        
         prompt = (
-            f"The request is classified as NON-STANDARD. Please analyze the following request and generate "
-            f"the list of dbt config steps that match the request. You must only produce the steps section "
-            f"matching the Step schema structure (step_name, task_dataset_prefix, dbt_invocation_command, dbt_flags, source_vars).\n\n"
-            f"Request:\n{instruction}"
+            f"The user's config intent is classified as NON-STANDARD. Please analyze the intent and generate "
+            f"the list of dbt config steps to honor it.\n\n"
+            f"User Intent: {config_intent}"
         )
         return Event(output=prompt, route="non_standard")
 
