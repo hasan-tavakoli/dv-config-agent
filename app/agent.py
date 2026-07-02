@@ -377,6 +377,24 @@ def create_pull_request_node(ctx: Context, node_input: ConfigVibeDiffSummary) ->
         yield Event(content=types.Content(role='model', parts=[types.Part.from_text(text=err_msg)]))
         yield Event(output={"error": err_msg})
 
+def handle_no_change(ctx: Context, node_input: dict) -> Event:
+    """Terminal node for when no configuration changes are required."""
+    msg = "No changes needed. Stopping."
+    return Event(
+        output={"status": "no_change", "msg": msg},
+        content=types.Content(role='model', parts=[types.Part.from_text(text=msg)])
+    )
+
+def handle_needs_human(ctx: Context, node_input: dict) -> Event:
+    """Terminal node for when validations or operations fail, routing to human review."""
+    errors = node_input.get("validation_errors", [])
+    errors_str = "\n".join(f"- {err}" for err in errors)
+    msg = f"Validation failed or Git error encountered. Human review needed.\nErrors:\n{errors_str}"
+    return Event(
+        output={"status": "needs_human", "errors": errors},
+        content=types.Content(role='model', parts=[types.Part.from_text(text=msg)])
+    )
+
 root_agent = Workflow(
     name="dv_config_agent",
     edges=[
@@ -395,6 +413,8 @@ root_agent = Workflow(
         (prepare_check_config_with_custom_steps, check_config_node),
         (check_config_node, {
             'ok': prepare_pr_summarizer_input,
+            'no_change': handle_no_change,
+            'needs_human': handle_needs_human,
         }),
         (prepare_pr_summarizer_input, config_pr_summarizer),
         (config_pr_summarizer, create_pull_request_node),
