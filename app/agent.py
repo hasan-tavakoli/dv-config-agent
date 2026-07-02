@@ -176,8 +176,19 @@ classifier_agent = LlmAgent(
     )
 )
 
+class LLMDbtFlag(BaseModel):
+    flag_name: str = Field(description="The flag name (e.g. --select, --exclude, --vars).")
+    flag_value: str = Field(description="The value of the flag (e.g. tag:sports_daily).")
+
+class LLMStep(BaseModel):
+    step_name: str = Field(description="The name of the dbt step (e.g., run_public_models, run_custom_models).")
+    task_dataset_prefix: list[str] | None = Field(default=None, description="Prefixes for dynamic task mapping; empty/absent = single task.")
+    dbt_invocation_command: str | None = Field(default=None, description="dbt command to run, e.g. build, run.")
+    dbt_flags: list[LLMDbtFlag] | None = Field(default=None, description="Per-step CLI flags.")
+    source_vars: list[str] | None = Field(default=None, description="Override default source variables.")
+
 class CustomStepsList(BaseModel):
-    steps: list[Step] = Field(
+    steps: list[LLMStep] = Field(
         description="The list of dbt steps to run, in execution order. Must follow the Step schema."
     )
 
@@ -240,7 +251,7 @@ def handle_classification_result(ctx: Context, node_input: ClassificationResult)
         return Event(output=prompt, route="non_standard")
 
 def prepare_check_config_with_custom_steps(ctx: Context, node_input: CustomStepsList) -> Event:
-    """Merges custom steps into the request payload."""
+    """Merges custom steps into the request payload, mapping dbt_flags lists to dicts."""
     steps_list = getattr(node_input, "steps", [])
     
     payload_str = ctx.state.get("payload", "")
@@ -249,7 +260,16 @@ def prepare_check_config_with_custom_steps(ctx: Context, node_input: CustomSteps
     except Exception:
         payload = {}
         
-    serialized_steps = [s.model_dump(mode="json") for s in steps_list]
+    serialized_steps = []
+    for s in steps_list:
+        step_dict = s.model_dump(mode="json", exclude_none=True)
+        if s.dbt_flags:
+            flags_dict = {}
+            for flag in s.dbt_flags:
+                flags_dict[flag.flag_name] = flag.flag_value
+            step_dict["dbt_flags"] = flags_dict
+        serialized_steps.append(step_dict)
+        
     payload["custom_steps"] = serialized_steps
     ctx.state["payload"] = json.dumps(payload)
     
