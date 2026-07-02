@@ -18,10 +18,15 @@ import json
 import re
 import subprocess
 import sys
-
 from dotenv import load_dotenv
 # Load local environment variables from .env if present
 load_dotenv()
+
+# Import Step model dynamically from scripts directory
+scripts_dir = os.path.join(os.path.dirname(__file__), "..", "scripts")
+if scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
+from dbt_config_models import Step
 
 from google.adk.apps import App
 from google.adk.models import Gemini
@@ -143,6 +148,90 @@ def check_config_node(ctx: Context) -> Event:
             output={"error": err_msg},
             content=types.Content(role='model', parts=[types.Part.from_text(text=err_msg)])
         )
+
+class ClassificationResult(BaseModel):
+    category: Literal["STANDARD", "NON-STANDARD"] = Field(
+        description="STANDARD if the normal single public-models step template fits. NON-STANDARD if the ticket implies a variation the template doesn't cover (e.g. no public step, different step name, multiple steps, etc.)."
+    )
+    reason: str = Field(description="Brief explanation of the classification.")
+
+classifier_agent = LlmAgent(
+    name="classifier_agent",
+    model="gemini-3.1-flash-lite",
+    output_schema=ClassificationResult,
+    instruction=(
+        "You are an expert assistant that classifies config generation requests. "
+        "STANDARD means the request uses the default single dbt step template (step_name='run_public_models', with empty dbt_flags). "
+        "NON-STANDARD means the request specifies custom step names, multiple steps, empty steps list, or different dbt flags."
+    )
+)
+
+class CustomStepsList(BaseModel):
+    steps: list[Step] = Field(
+        description="The list of dbt steps to run, in execution order. Must follow the Step schema."
+    )
+
+non_standard_steps_generator = LlmAgent(
+    name="non_standard_steps_generator",
+    model="gemini-3.1-flash-lite",
+    output_schema=CustomStepsList,
+    instruction=(
+        "You are an expert helper that generates the steps configuration for a dbt DAG config.json. "
+        "You must generate ONLY the steps list within the dbt config schema. "
+        "Each step must specify a step_name and optional parameters like task_dataset_prefix, "
+        "dbt_invocation_command, or dbt_flags. "
+        "For example, if the ticket requests 'no public step', you should omit the public step or adapt "
+        "the step name/parameters accordingly."
+    )
+)
+
+def classify_request(ctx: Context) -> Event:
+    """Pre-classifies the request. If no instruction field is provided, defaults to standard."""
+    payload_str = ctx.state.get("payload", "")
+    try:
+        params = json.loads(payload_str)
+    except Exception:
+        params = {}
+        
+    instruction = params.get("instruction") or params.get("ticket_text") or params.get("ticket") or ""
+    
+    if not instruction.strip():
+        return Event(output={"category": "STANDARD", "reason": "No instruction provided."}, route="standard")
+    
+    return Event(output=instruction, route="llm_classify")
+
+def handle_classification_result(ctx: Context, node_input: ClassificationResult) -> Event:
+    """Handles classification output and routes to standard or non-standard steps generation."""
+    category = getattr(node_input, "category", "STANDARD")
+    ctx.state["request_category"] = category
+    
+    if category == "STANDARD":
+        return Event(output=ctx.state.get("payload"), route="standard")
+    else:
+        instruction = ctx.state.get("payload", "")
+        prompt = (
+            f"The request is classified as NON-STANDARD. Please analyze the following request and generate "
+            f"the list of dbt config steps that match the request. You must only produce the steps section "
+            f"matching the Step schema structure (step_name, task_dataset_prefix, dbt_invocation_command, dbt_flags, source_vars).\n\n"
+            f"Request:\n{instruction}"
+        )
+        return Event(output=prompt, route="non_standard")
+
+def prepare_check_config_with_custom_steps(ctx: Context, node_input: CustomStepsList) -> Event:
+    """Merges custom steps into the request payload."""
+    steps_list = getattr(node_input, "steps", [])
+    
+    payload_str = ctx.state.get("payload", "")
+    try:
+        payload = json.loads(payload_str)
+    except Exception:
+        payload = {}
+        
+    serialized_steps = [s.model_dump(mode="json") for s in steps_list]
+    payload["custom_steps"] = serialized_steps
+    ctx.state["payload"] = json.dumps(payload)
+    
+    return Event(output=json.dumps(payload))
 
 class ConfigVibeDiffSummary(BaseModel):
     plain_summary: str = Field(
@@ -292,7 +381,18 @@ root_agent = Workflow(
     name="dv_config_agent",
     edges=[
         ('START', log_input),
-        (log_input, check_config_node),
+        (log_input, classify_request),
+        (classify_request, {
+            'standard': check_config_node,
+            'llm_classify': classifier_agent
+        }),
+        (classifier_agent, handle_classification_result),
+        (handle_classification_result, {
+            'standard': check_config_node,
+            'non_standard': non_standard_steps_generator
+        }),
+        (non_standard_steps_generator, prepare_check_config_with_custom_steps),
+        (prepare_check_config_with_custom_steps, check_config_node),
         (check_config_node, {
             'ok': prepare_pr_summarizer_input,
         }),

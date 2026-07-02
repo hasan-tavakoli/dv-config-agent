@@ -82,10 +82,15 @@ def generate_config_json(payload: dict) -> dict:
     environment = payload.get("environment", "")
     location = "southamerica-east1" if "sa" in environment else "europe-west1"
     
-    step = Step(
-        step_name="run_public_models",
-        dbt_flags={}
-    )
+    custom_steps = payload.get("custom_steps")
+    if custom_steps is not None:
+        steps = [Step.model_validate(s) for s in custom_steps]
+    else:
+        step = Step(
+            step_name="run_public_models",
+            dbt_flags={}
+        )
+        steps = [step]
     
     env_vars = EnvVariables(
         DBT_EXECUTION_PROJECT=payload.get("execution_project"),
@@ -98,7 +103,7 @@ def generate_config_json(payload: dict) -> dict:
     
     job_config = JobConfig(
         env_variables=env_vars,
-        steps=[step]
+        steps=steps
     )
     
     dag_config = DagConfig(
@@ -370,6 +375,16 @@ def main():
                 deploy_data["region"] = val
                 env_vars["DBT_LOCATION"] = val
             check_and_update("region", deploy_data.get("region"), region, update_region)
+            
+            # Compare custom_steps if provided
+            custom_steps = payload.get("custom_steps")
+            if custom_steps is not None:
+                new_steps_list = [Step.model_validate(s).model_dump(mode="json") for s in custom_steps]
+                current_steps_list = [Step.model_validate(s).model_dump(mode="json") for s in job_config.get("steps", [])]
+                
+                if current_steps_list != new_steps_list:
+                    changes["steps"] = {"old": current_steps_list, "new": new_steps_list}
+                    job_config["steps"] = new_steps_list
             
             if not changes:
                 print("LOG: no changes needed", file=sys.stderr)
