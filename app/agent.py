@@ -97,30 +97,35 @@ def check_config_node(ctx: Context) -> Event:
             f"- Task Type: {task}"
         )
         
-        if task == "create":
+        if task == "create" or (task == "update" and output_data.get("task_needed", True)):
             config_content = output_data.get("config_content")
             deploy_content = output_data.get("deploy_content")
             config_path = output_data.get("config_path")
             deploy_path = output_data.get("deploy_path")
+            label = "Generated" if task == "create" else "Updated"
             msg += (
-                f"\n\nGenerated config.json at {config_path}:\n"
+                f"\n\n{label} config.json at {config_path}:\n"
                 f"```json\n{config_content}\n```\n"
-                f"\nGenerated deploy.yml at {deploy_path}:\n"
+                f"\n{label} deploy.yml at {deploy_path}:\n"
                 f"```yaml\n{deploy_content}\n```"
             )
             
+        task_needed = output_data.get("task_needed", True)
         validation_passed = output_data.get("validation_passed", True)
         validation_errors = output_data.get("validation_errors", [])
         
         route = "ok"
-        if not validation_passed:
+        if not task_needed:
+            route = "no_change"
+            msg += "\n\nno changes needed"
+        elif not validation_passed:
             route = "needs_human"
             errors_str = "\n".join(f"- {err}" for err in validation_errors)
             msg += (
                 f"\n\n❌ Validation Failed:\n"
                 f"{errors_str}"
             )
-        elif task == "create":
+        else:
             msg += "\n\n✅ validation passed"
             
         print(msg)
@@ -161,12 +166,15 @@ def prepare_pr_summarizer_input(ctx: Context, node_input: dict) -> Event:
     config_content = check_result.get("config_content", "")
     deploy_content = check_result.get("deploy_content", "")
     task = check_result.get("task", "create")
+    changes = check_result.get("changes", {})
+    changes_str = json.dumps(changes, indent=2)
     
     prompt = (
         f"Original Request Payload:\n{payload_str}\n\n"
         f"Generated config.json:\n```json\n{config_content}\n```\n\n"
         f"Generated deploy.yml:\n```yaml\n{deploy_content}\n```\n\n"
         f"Action Type: {task.upper()} (Note: CREATE means this is a brand-new DAG being added to the platform. UPDATE means we are modifying an existing DAG config.)\n\n"
+        f"Changes Detected:\n```json\n{changes_str}\n```\n\n"
         f"Please analyze these inputs and generate the structured PR review summary."
     )
     return Event(output=prompt)

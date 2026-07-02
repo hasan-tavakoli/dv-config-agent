@@ -124,8 +124,6 @@ def generate_deploy_yaml(payload: dict) -> str:
     image = payload.get("image")
     tag = payload.get("tag")
     
-    # image field must have tag, but we allow generating it from whatever tag is passed.
-    # If tag is empty/None, we don't append a ":" tag so we can test validation failure.
     if tag:
         full_image = f"{image}:{tag}"
     else:
@@ -252,34 +250,32 @@ def main():
         
         config_content = ""
         deploy_content = ""
-        config_path_str = ""
-        deploy_path_str = ""
+        config_path_str = str(target_file_path)
+        deploy_path_str = str(target_file_path.parent / "deploy/deploy.yml")
         validation_passed = True
         validation_errors = []
         feature_branch = ""
+        changes = {}
+        task_needed = True
         
         if task_type == "create":
-            # 1. Create target directory and deploy directory
+            # Create logic
             dag_dir = target_file_path.parent
             deploy_dir = dag_dir / "deploy"
             dag_dir.mkdir(parents=True, exist_ok=True)
             deploy_dir.mkdir(parents=True, exist_ok=True)
             
-            # 2. Generate and write config.json
             config_data = generate_config_json(payload)
             config_content = json.dumps(config_data, indent=2)
             with open(target_file_path, "w") as f:
                 f.write(config_content)
-            config_path_str = str(target_file_path)
-            
-            # 3. Generate and write deploy.yml
+                
             deploy_yaml_path = deploy_dir / "deploy.yml"
             deploy_content = generate_deploy_yaml(payload)
             with open(deploy_yaml_path, "w") as f:
                 f.write(deploy_content)
-            deploy_path_str = str(deploy_yaml_path)
-            
-            # 4. Run validations
+                
+            # Run validations
             config_errors = validate_config_json(target_file_path)
             deploy_errors = validate_deploy_yaml(deploy_yaml_path)
             all_errors = config_errors + deploy_errors
@@ -288,85 +284,150 @@ def main():
                 validation_passed = False
                 validation_errors = all_errors
                 print("LOG: Validation failed!", file=sys.stderr)
-                for err in all_errors:
-                    print(f"LOG: - {err}", file=sys.stderr)
             else:
                 validation_passed = True
                 print("LOG: validation passed", file=sys.stderr)
                 
-                # Perform Git Checkout, Commit, and Push
+                # Perform Git Push
                 dag_name = dag_id.replace("_", "-")
                 feature_branch = f"feature/config-{dag_name}-{int(time.time())}"
-                
                 try:
-                    # Create and checkout feature branch
-                    subprocess.run(
-                        ["git", "checkout", "-b", feature_branch],
-                        cwd=str(clone_dest),
-                        capture_output=True,
-                        text=True,
-                        check=True
-                    )
+                    subprocess.run(["git", "checkout", "-b", feature_branch], cwd=str(clone_dest), check=True, capture_output=True)
+                    subprocess.run(["git", "add", "."], cwd=str(clone_dest), check=True, capture_output=True)
+                    subprocess.run(["git", "commit", "-m", f"✨ feat: Add dbt DAG config for {dag_name}"], cwd=str(clone_dest), check=True, capture_output=True)
+                    subprocess.run(["git", "remote", "set-url", "origin", f"https://x-access-token:{token}@github.com/hasan-tavakoli/dv-platform-config.git"], cwd=str(clone_dest), check=True, capture_output=True)
                     
-                    # Git add
-                    subprocess.run(
-                        ["git", "add", "."],
-                        cwd=str(clone_dest),
-                        capture_output=True,
-                        text=True,
-                        check=True
-                    )
-                    
-                    # Git commit
-                    commit_msg = f"✨ feat: Add dbt DAG config for {dag_name}"
-                    subprocess.run(
-                        ["git", "commit", "-m", commit_msg],
-                        cwd=str(clone_dest),
-                        capture_output=True,
-                        text=True,
-                        check=True
-                    )
-                    
-                    # Push branch
-                    push_url = f"https://x-access-token:{token}@github.com/hasan-tavakoli/dv-platform-config.git"
-                    
-                    # Set push command remote URL securely
-                    subprocess.run(
-                        ["git", "remote", "set-url", "origin", push_url],
-                        cwd=str(clone_dest),
-                        capture_output=True,
-                        text=True,
-                        check=True
-                    )
-                    
-                    push_res = subprocess.run(
-                        ["git", "push", "origin", feature_branch],
-                        cwd=str(clone_dest),
-                        capture_output=True,
-                        text=True
-                    )
+                    push_res = subprocess.run(["git", "push", "origin", feature_branch], cwd=str(clone_dest), capture_output=True, text=True)
                     if push_res.returncode != 0:
-                        err = push_res.stderr.replace(token, "********")
-                        raise RuntimeError(f"Git push failed: {err}")
-                        
+                        raise RuntimeError(f"Git push failed: {push_res.stderr.replace(token, '********')}")
                     print(f"LOG: Successfully pushed to {feature_branch}", file=sys.stderr)
-                    
                 except Exception as exc:
                     err_msg = str(exc).replace(token, "********")
                     print(f"Error during git operations: {err_msg}", file=sys.stderr)
                     validation_passed = False
                     validation_errors.append(f"Git operation failed: {err_msg}")
                     feature_branch = ""
+                    
+        elif task_type == "update":
+            # 1. Read existing config.json and deploy.yml
+            deploy_yaml_path = Path(deploy_path_str)
+            
+            with open(target_file_path, "r") as f:
+                config_data = json.load(f)
+            with open(deploy_yaml_path, "r") as f:
+                deploy_data = yaml.safe_load(f)
                 
+            dag_entry = config_data["dag_configs"][0]
+            dag_config = dag_entry["dag_config"]
+            job_config = dag_entry["job_config"]
+            env_vars = job_config["env_variables"]
+            
+            # Helper to check, track, and update changes
+            def check_and_update(field_name, current_val, new_val, update_func):
+                if current_val != new_val:
+                    changes[field_name] = {"old": current_val, "new": new_val}
+                    update_func(new_val)
+            
+            # Compare dag_id
+            check_and_update("dag_id", dag_config.get("dag_id"), payload.get("dag_id"), lambda val: dag_config.update({"dag_id": val}))
+            if "dag_id" in changes:
+                deploy_data["name"] = payload.get("dag_id").replace("_", "-")
+                
+            # Compare schedule
+            check_and_update("schedule", dag_config.get("schedule"), payload.get("schedule"), lambda val: dag_config.update({"schedule": val}))
+            
+            # Compare service_account
+            def update_sa(val):
+                env_vars["DBT_IMPERSONATE_SERVICE_ACCOUNT"] = val
+                deploy_data["service_account"] = val
+            check_and_update("service_account", env_vars.get("DBT_IMPERSONATE_SERVICE_ACCOUNT"), payload.get("service_account"), update_sa)
+            
+            # Compare execution_project
+            check_and_update("execution_project", env_vars.get("DBT_EXECUTION_PROJECT"), payload.get("execution_project"), lambda val: env_vars.update({"DBT_EXECUTION_PROJECT": val}))
+            
+            # Compare target_project
+            check_and_update("target_project", env_vars.get("DBT_PROJECT"), payload.get("target_project"), lambda val: env_vars.update({"DBT_PROJECT": val}))
+            
+            # Compare image
+            new_image = f"{payload.get('image')}:{payload.get('tag')}" if payload.get('tag') else payload.get('image')
+            check_and_update("image", deploy_data.get("image"), new_image, lambda val: deploy_data.update({"image": val}))
+            
+            # Compare domain
+            def update_domain(val):
+                env_vars["DBT_DOMAIN_NAME"] = val
+                old_dom = changes.get("domain", {}).get("old", "")
+                tags = dag_config.get("tags", [])
+                if old_dom in tags:
+                    tags[tags.index(old_dom)] = val
+                else:
+                    tags.append(val)
+                dag_config["tags"] = tags
+            check_and_update("domain", env_vars.get("DBT_DOMAIN_NAME"), payload.get("domain"), update_domain)
+            
+            # Compare environment / region
+            region = "southamerica-east1" if "sa" in payload.get("environment", "") else "europe-west1"
+            def update_region(val):
+                deploy_data["region"] = val
+                env_vars["DBT_LOCATION"] = val
+            check_and_update("region", deploy_data.get("region"), region, update_region)
+            
+            if not changes:
+                print("LOG: no changes needed", file=sys.stderr)
+                task_needed = False
+            else:
+                # Write changes back to file
+                config_content = json.dumps(config_data, indent=2)
+                with open(target_file_path, "w") as f:
+                    f.write(config_content)
+                    
+                # Format yaml properly
+                deploy_content = yaml.dump(deploy_data, default_flow_style=False, sort_keys=False)
+                with open(deploy_yaml_path, "w") as f:
+                    f.write(deploy_content)
+                    
+                # Run validations
+                config_errors = validate_config_json(target_file_path)
+                deploy_errors = validate_deploy_yaml(deploy_yaml_path)
+                all_errors = config_errors + deploy_errors
+                
+                if all_errors:
+                    validation_passed = False
+                    validation_errors = all_errors
+                    print("LOG: Validation failed!", file=sys.stderr)
+                else:
+                    validation_passed = True
+                    print("LOG: validation passed", file=sys.stderr)
+                    
+                    # Perform Git Push for Update
+                    dag_name = dag_id.replace("_", "-")
+                    feature_branch = f"feature/config-update-{dag_name}-{int(time.time())}"
+                    try:
+                        subprocess.run(["git", "checkout", "-b", feature_branch], cwd=str(clone_dest), check=True, capture_output=True)
+                        subprocess.run(["git", "add", "."], cwd=str(clone_dest), check=True, capture_output=True)
+                        subprocess.run(["git", "commit", "-m", f"🔧 update: Update config for {dag_name}"], cwd=str(clone_dest), check=True, capture_output=True)
+                        subprocess.run(["git", "remote", "set-url", "origin", f"https://x-access-token:{token}@github.com/hasan-tavakoli/dv-platform-config.git"], cwd=str(clone_dest), check=True, capture_output=True)
+                        
+                        push_res = subprocess.run(["git", "push", "origin", feature_branch], cwd=str(clone_dest), capture_output=True, text=True)
+                        if push_res.returncode != 0:
+                            raise RuntimeError(f"Git push failed: {push_res.stderr.replace(token, '********')}")
+                        print(f"LOG: Successfully pushed to {feature_branch}", file=sys.stderr)
+                    except Exception as exc:
+                        err_msg = str(exc).replace(token, "********")
+                        print(f"Error during git operations: {err_msg}", file=sys.stderr)
+                        validation_passed = False
+                        validation_errors.append(f"Git operation failed: {err_msg}")
+                        feature_branch = ""
+                        
             # Log print details
-            print(f"LOG: Created config.json at {rel_path}", file=sys.stderr)
-            print(f"LOG: Created deploy.yml at {dag_dir.relative_to(clone_dest)}/deploy/deploy.yml", file=sys.stderr)
-            print(f"\n--- GENERATED config.json ({rel_path}) ---", file=sys.stderr)
-            print(config_content, file=sys.stderr)
-            print(f"\n--- GENERATED deploy.yml ({dag_dir.relative_to(clone_dest)}/deploy/deploy.yml) ---", file=sys.stderr)
-            print(deploy_content, file=sys.stderr)
-            print("-------------------------------------------\n", file=sys.stderr)
-        
+            if task_needed:
+                print(f"LOG: Updated config.json at {rel_path}", file=sys.stderr)
+                print(f"LOG: Updated deploy.yml at {deploy_yaml_path.relative_to(clone_dest)}", file=sys.stderr)
+                print(f"\n--- GENERATED config.json ({rel_path}) ---", file=sys.stderr)
+                print(config_content, file=sys.stderr)
+                print(f"\n--- GENERATED deploy.yml ({deploy_yaml_path.relative_to(clone_dest)}) ---", file=sys.stderr)
+                print(deploy_content, file=sys.stderr)
+                print("-------------------------------------------\n", file=sys.stderr)
+
         result = {
             "resolved_path": rel_path,
             "exists": "yes" if exists else "no",
@@ -377,7 +438,9 @@ def main():
             "deploy_content": deploy_content,
             "validation_passed": validation_passed,
             "validation_errors": validation_errors,
-            "feature_branch": feature_branch
+            "feature_branch": feature_branch,
+            "changes": changes,
+            "task_needed": task_needed
         }
         
     # Output to stdout as JSON

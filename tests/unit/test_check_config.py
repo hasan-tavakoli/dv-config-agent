@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import yaml
 import pytest
 from unittest.mock import patch, MagicMock
 from scripts.check_config import resolve_path, main
@@ -41,45 +42,129 @@ def test_resolve_path():
 @patch("subprocess.run")
 @patch("scripts.check_config.get_github_token")
 @patch("tempfile.TemporaryDirectory")
-def test_main_exists(mock_temp_dir, mock_get_token, mock_run):
+def test_main_exists(mock_temp_dir, mock_get_token, mock_run, tmp_path):
     mock_get_token.return_value = "dummy-token"
     
     # Mock TemporaryDirectory context manager
     mock_temp_dir_instance = MagicMock()
-    mock_temp_dir_instance.__enter__.return_value = "/tmp/dummy-clone"
+    mock_temp_dir_instance.__enter__.return_value = str(tmp_path)
     mock_temp_dir.return_value = mock_temp_dir_instance
     
-    # Mock Path.exists to return True
-    with patch("pathlib.Path.exists", return_value=True):
-        payload = {
-            "environment": "stage",
-            "domain": "sports",
-            "dag_id": "dv_sports_elt"
-        }
+    # Mock subprocess.run for git commands
+    mock_run_res = MagicMock()
+    mock_run_res.returncode = 0
+    mock_run_res.stdout = ""
+    mock_run_res.stderr = ""
+    mock_run.return_value = mock_run_res
+    
+    # Write dummy files to tmp_path
+    rel_path = "dv-stage-eu/sports/dv-sports-elt/config.json"
+    target_config = tmp_path / rel_path
+    target_deploy = tmp_path / "dv-stage-eu/sports/dv-sports-elt/deploy/deploy.yml"
+    target_config.parent.mkdir(parents=True, exist_ok=True)
+    (target_config.parent / "deploy").mkdir(parents=True, exist_ok=True)
+    
+    dummy_config = {
+        "dag_configs": [
+            {
+                "dag_config": {
+                    "dag_id": "dv_sports_elt",
+                    "schedule": "30 0 * * *",
+                    "start_date": "2024-01-01",
+                    "tags": ["sports"]
+                },
+                "job_config": {
+                    "env_variables": {
+                        "DBT_EXECUTION_PROJECT": "dv-dev-eu-w1-sports-elt",
+                        "DBT_IMPERSONATE_SERVICE_ACCOUNT": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
+                        "DBT_PROJECT": "dv-dev-eu-w1-sports-data",
+                        "DBT_PROFILE": "cloud-run",
+                        "DBT_LOCATION": "europe-west1",
+                        "DBT_DOMAIN_NAME": "sports"
+                    },
+                    "steps": [{"step_name": "run_public_models"}]
+                }
+            }
+        ]
+    }
+    with open(target_config, "w") as f:
+        json.dump(dummy_config, f)
         
-        with patch("sys.argv", ["check_config.py", json.dumps(payload)]):
-            printed_lines = []
-            def mock_print(*args, **kwargs):
-                if args:
-                    printed_lines.append(args[0])
-            
-            with patch("builtins.print", mock_print):
-                main()
-            
-            # Check output JSON
-            output_json = None
-            for line in printed_lines:
-                try:
-                    data = json.loads(line)
-                    if isinstance(data, dict) and "resolved_path" in data:
-                        output_json = data
-                        break
-                except (json.JSONDecodeError, TypeError):
-                    continue
-            assert output_json is not None, f"Could not find valid JSON in printed lines: {printed_lines}"
-            assert output_json["resolved_path"] == "dv-stage-eu/sports/dv-sports-elt/config.json"
-            assert output_json["exists"] == "yes"
-            assert output_json["task"] == "update"
+    dummy_deploy = {
+        "name": "dv-sports-elt",
+        "image": "ghcr.io/hasan-tavakoli/dv-sports-etl:old-tag",
+        "service_account": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
+        "region": "europe-west1"
+    }
+    with open(target_deploy, "w") as f:
+        yaml.safe_dump(dummy_deploy, f)
+
+    # 1. First test: payload matches existing values (no changes needed)
+    payload = {
+        "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",
+        "tag": "old-tag",
+        "domain": "sports",
+        "environment": "stage",
+        "dag_id": "dv_sports_elt",
+        "schedule": "30 0 * * *",
+        "service_account": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
+        "execution_project": "dv-dev-eu-w1-sports-elt",
+        "target_project": "dv-dev-eu-w1-sports-data"
+    }
+    
+    with patch("sys.argv", ["check_config.py", json.dumps(payload)]):
+        printed_lines = []
+        def mock_print(*args, **kwargs):
+            if args:
+                printed_lines.append(args[0])
+        
+        with patch("builtins.print", mock_print):
+            main()
+        
+        # Check output JSON
+        output_json = None
+        for line in printed_lines:
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and "resolved_path" in data:
+                    output_json = data
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        assert output_json is not None, f"Could not find valid JSON in printed lines: {printed_lines}"
+        assert output_json["resolved_path"] == "dv-stage-eu/sports/dv-sports-elt/config.json"
+        assert output_json["exists"] == "yes"
+        assert output_json["task"] == "update"
+        assert output_json["task_needed"] is False
+
+    # 2. Second test: payload has changes
+    payload_changes = payload.copy()
+    payload_changes["tag"] = "new-tag"
+    payload_changes["schedule"] = "0 1 * * *"
+
+    with patch("sys.argv", ["check_config.py", json.dumps(payload_changes)]):
+        printed_lines = []
+        def mock_print(*args, **kwargs):
+            if args:
+                printed_lines.append(args[0])
+        
+        with patch("builtins.print", mock_print):
+            main()
+        
+        # Check output JSON
+        output_json = None
+        for line in printed_lines:
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and "resolved_path" in data:
+                    output_json = data
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        assert output_json is not None, f"Could not find valid JSON in printed lines: {printed_lines}"
+        assert output_json["task_needed"] is True
+        assert output_json["changes"]["image"] == {"old": "ghcr.io/hasan-tavakoli/dv-sports-etl:old-tag", "new": "ghcr.io/hasan-tavakoli/dv-sports-etl:new-tag"}
+        assert output_json["changes"]["schedule"] == {"old": "30 0 * * *", "new": "0 1 * * *"}
 
 
 @patch("subprocess.run")
