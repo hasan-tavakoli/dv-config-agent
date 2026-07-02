@@ -289,6 +289,28 @@ def main():
         task_needed = True
 
         if task_type == "create":
+            # A new DAG cannot be created without a schedule
+            if not payload.get("schedule"):
+                err_msg = "new DAG requires a schedule"
+                print(f"LOG: Validation failed! {err_msg}", file=sys.stderr)
+                result = {
+                    "resolved_path": rel_path,
+                    "exists": "no",
+                    "task": task_type,
+                    "config_path": config_path_str,
+                    "config_content": "",
+                    "deploy_path": deploy_path_str,
+                    "deploy_content": "",
+                    "validation_passed": False,
+                    "validation_errors": [err_msg],
+                    "feature_branch": "",
+                    "changes": {},
+                    "task_needed": True,
+                }
+                print(json.dumps(result))
+                print(f"LOG: Decided task type: {task_type}", file=sys.stderr)
+                return
+
             # Create logic
             dag_dir = target_file_path.parent
             deploy_dir = dag_dir / "deploy"
@@ -408,13 +430,15 @@ def main():
             if "dag_id" in changes:
                 deploy_data["name"] = payload.get("dag_id").replace("_", "-")
 
-            # Compare schedule
-            check_and_update(
-                "schedule",
-                dag_config.get("schedule"),
-                payload.get("schedule"),
-                lambda val: dag_config.update({"schedule": val}),
-            )
+            # Compare schedule — skip if payload schedule is empty/absent (preserve existing)
+            new_schedule = payload.get("schedule")
+            if new_schedule:
+                check_and_update(
+                    "schedule",
+                    dag_config.get("schedule"),
+                    new_schedule,
+                    lambda val: dag_config.update({"schedule": val}),
+                )
 
             # Compare service_account
             def update_sa(val):

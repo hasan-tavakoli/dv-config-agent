@@ -693,3 +693,161 @@ def test_main_source_missing_fallback(
             "old": "ghcr.io/hasan-tavakoli/dv-sports-etl:old-tag",
             "new": "ghcr.io/hasan-tavakoli/dv-sports-etl:new-tag",
         }
+
+
+@patch("subprocess.run")
+@patch("scripts.check_config.get_github_token")
+@patch("tempfile.TemporaryDirectory")
+def test_main_update_preserves_schedule_if_empty(
+    mock_temp_dir, mock_get_token, mock_run, tmp_path
+):
+    mock_get_token.return_value = "dummy-token"
+
+    mock_temp_dir_instance = MagicMock()
+    mock_temp_dir_instance.__enter__.return_value = str(tmp_path)
+    mock_temp_dir.return_value = mock_temp_dir_instance
+
+    mock_run_res = MagicMock()
+    mock_run_res.returncode = 0
+    mock_run.return_value = mock_run_res
+
+    # Write dummy files to tmp_path
+    rel_path = "dv-stage-eu/sports/dv-sports-elt/config.json"
+    target_config = tmp_path / rel_path
+    target_deploy = tmp_path / "dv-stage-eu/sports/dv-sports-elt/deploy/deploy.yml"
+    target_config.parent.mkdir(parents=True, exist_ok=True)
+    (target_config.parent / "deploy").mkdir(parents=True, exist_ok=True)
+
+    dummy_config = {
+        "dag_configs": [
+            {
+                "dag_config": {
+                    "dag_id": "dv_sports_elt",
+                    "schedule": "30 0 * * *",
+                    "start_date": "2024-01-01",
+                    "tags": ["sports"],
+                },
+                "job_config": {
+                    "env_variables": {
+                        "DBT_EXECUTION_PROJECT": "dv-dev-eu-w1-sports-elt",
+                        "DBT_IMPERSONATE_SERVICE_ACCOUNT": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
+                        "DBT_PROJECT": "dv-dev-eu-w1-sports-data",
+                        "DBT_PROFILE": "cloud-run",
+                        "DBT_LOCATION": "europe-west1",
+                        "DBT_DOMAIN_NAME": "sports",
+                    },
+                    "steps": [{"step_name": "run_public_models"}],
+                },
+            }
+        ]
+    }
+    with open(target_config, "w") as f:
+        json.dump(dummy_config, f)
+
+    dummy_deploy = {
+        "name": "dv-sports-elt",
+        "image": "ghcr.io/hasan-tavakoli/dv-sports-etl:old-tag",
+        "service_account": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
+        "region": "europe-west1",
+    }
+    with open(target_deploy, "w") as f:
+        yaml.safe_dump(dummy_deploy, f)
+
+    # Model payload with empty schedule
+    payload = {
+        "source": "model",
+        "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",
+        "tag": "new-tag",
+        "domain": "sports",
+        "environment": "stage",
+        "dag_id": "dv_sports_elt",
+        "schedule": "",
+        "service_account": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
+        "execution_project": "dv-dev-eu-w1-sports-elt",
+        "target_project": "dv-dev-eu-w1-sports-data",
+    }
+
+    with patch("sys.argv", ["check_config.py", json.dumps(payload)]):
+        printed_lines = []
+
+        def mock_print(*args, **kwargs):
+            if args:
+                printed_lines.append(args[0])
+
+        with patch("builtins.print", mock_print):
+            main()
+
+        output_json = None
+        for line in printed_lines:
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and "resolved_path" in data:
+                    output_json = data
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        assert output_json is not None
+        assert output_json["task_needed"] is True
+        assert "image" in output_json["changes"]
+        assert "schedule" not in output_json["changes"]
+
+        # Verify existing schedule is preserved
+        with open(target_config) as f:
+            updated_config = json.load(f)
+        assert (
+            updated_config["dag_configs"][0]["dag_config"]["schedule"] == "30 0 * * *"
+        )
+
+
+@patch("subprocess.run")
+@patch("scripts.check_config.get_github_token")
+@patch("tempfile.TemporaryDirectory")
+def test_main_create_fails_without_schedule(
+    mock_temp_dir, mock_get_token, mock_run, tmp_path
+):
+    mock_get_token.return_value = "dummy-token"
+
+    mock_temp_dir_instance = MagicMock()
+    mock_temp_dir_instance.__enter__.return_value = str(tmp_path)
+    mock_temp_dir.return_value = mock_temp_dir_instance
+
+    mock_run_res = MagicMock()
+    mock_run_res.returncode = 0
+    mock_run.return_value = mock_run_res
+
+    # Missing/empty schedule on create should fail validation
+    payload = {
+        "source": "model",
+        "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",
+        "tag": "new-tag",
+        "domain": "sports",
+        "environment": "stage",
+        "dag_id": "dv_sports_elt",
+        "schedule": "",
+        "service_account": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
+        "execution_project": "dv-dev-eu-w1-sports-elt",
+        "target_project": "dv-dev-eu-w1-sports-data",
+    }
+
+    with patch("sys.argv", ["check_config.py", json.dumps(payload)]):
+        printed_lines = []
+
+        def mock_print(*args, **kwargs):
+            if args:
+                printed_lines.append(args[0])
+
+        with patch("builtins.print", mock_print):
+            main()
+
+        output_json = None
+        for line in printed_lines:
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and "resolved_path" in data:
+                    output_json = data
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        assert output_json is not None
+        assert output_json["validation_passed"] is False
+        assert "new DAG requires a schedule" in output_json["validation_errors"]
