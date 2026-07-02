@@ -351,6 +351,23 @@ def main():
                         capture_output=True,
                     )
                     subprocess.run(
+                        [
+                            "git",
+                            "config",
+                            "user.email",
+                            "agent@dv-config-agent.local",
+                        ],
+                        cwd=str(clone_dest),
+                        check=True,
+                        capture_output=True,
+                    )
+                    subprocess.run(
+                        ["git", "config", "user.name", "dv-config-agent"],
+                        cwd=str(clone_dest),
+                        check=True,
+                        capture_output=True,
+                    )
+                    subprocess.run(
                         ["git", "add", "."],
                         cwd=str(clone_dest),
                         check=True,
@@ -568,6 +585,23 @@ def main():
                     try:
                         subprocess.run(
                             ["git", "checkout", "-b", feature_branch],
+                            cwd=str(clone_dest),
+                            check=True,
+                            capture_output=True,
+                        )
+                        subprocess.run(
+                            [
+                                "git",
+                                "config",
+                                "user.email",
+                                "agent@dv-config-agent.local",
+                            ],
+                            cwd=str(clone_dest),
+                            check=True,
+                            capture_output=True,
+                        )
+                        subprocess.run(
+                            ["git", "config", "user.name", "dv-config-agent"],
                             cwd=str(clone_dest),
                             check=True,
                             capture_output=True,
