@@ -93,6 +93,19 @@ def check_config_node(ctx: Context) -> Event:
             f"- Exists: {exists}\n"
             f"- Task Type: {task}"
         )
+        
+        if task == "create":
+            config_content = output_data.get("config_content")
+            deploy_content = output_data.get("deploy_content")
+            config_path = output_data.get("config_path")
+            deploy_path = output_data.get("deploy_path")
+            msg += (
+                f"\n\nGenerated config.json at {config_path}:\n"
+                f"```json\n{config_content}\n```\n"
+                f"\nGenerated deploy.yml at {deploy_path}:\n"
+                f"```yaml\n{deploy_content}\n```"
+            )
+            
         print(msg)
         
         return Event(

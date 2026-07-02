@@ -20,6 +20,13 @@ import tempfile
 import subprocess
 from pathlib import Path
 
+# Add scripts directory to sys.path to import dbt_config_models
+scripts_dir = Path(__file__).resolve().parent
+if str(scripts_dir) not in sys.path:
+    sys.path.insert(0, str(scripts_dir))
+
+from dbt_config_models import RootConfig, DagEntry, DagConfig, JobConfig, EnvVariables, Step
+
 def load_env(env_path: Path):
     env_vars = {}
     if env_path.exists():
@@ -66,6 +73,70 @@ def resolve_path(environment: str, domain: str, dag_id: str) -> str:
     # Replace underscores in dag_id with hyphens
     dag_name = dag_id.replace("_", "-")
     return f"{subtree}/{domain}/{dag_name}/config.json"
+
+def generate_config_json(payload: dict) -> dict:
+    domain = payload.get("domain")
+    environment = payload.get("environment", "")
+    location = "southamerica-east1" if "sa" in environment else "europe-west1"
+    
+    step = Step(
+        step_name="run_public_models",
+        dbt_flags={}
+    )
+    
+    env_vars = EnvVariables(
+        DBT_EXECUTION_PROJECT=payload.get("execution_project"),
+        DBT_IMPERSONATE_SERVICE_ACCOUNT=payload.get("service_account"),
+        DBT_PROJECT=payload.get("target_project"),
+        DBT_PROFILE="cloud-run",
+        DBT_LOCATION=location,
+        DBT_DOMAIN_NAME=domain
+    )
+    
+    job_config = JobConfig(
+        env_variables=env_vars,
+        steps=[step]
+    )
+    
+    dag_config = DagConfig(
+        dag_id=payload.get("dag_id"),
+        schedule=payload.get("schedule"),
+        start_date="2024-01-01",
+        tags=[domain]
+    )
+    
+    root_config = RootConfig(
+        dag_configs=[
+            DagEntry(
+                dag_config=dag_config,
+                job_config=job_config
+            )
+        ]
+    )
+    
+    return root_config.model_dump(mode="json")
+
+def generate_deploy_yaml(payload: dict) -> str:
+    dag_name = payload.get("dag_id").replace("_", "-")
+    image = payload.get("image")
+    tag = payload.get("tag")
+    full_image = f"{image}:{tag}"
+    service_account = payload.get("service_account")
+    environment = payload.get("environment", "")
+    region = "southamerica-east1" if "sa" in environment else "europe-west1"
+    
+    return f"""name: {dag_name}
+image: {full_image}
+service_account: {service_account}
+region: {region}
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+"""
 
 def main():
     # Read payload from argument or stdin
@@ -135,23 +206,57 @@ def main():
         # Check if config.json exists
         target_file_path = clone_dest / rel_path
         exists = target_file_path.exists()
+        task_type = "update" if exists else "create"
         
-    # Decide task type
-    task_type = "update" if exists else "create"
-    
-    # Structure result
-    result = {
-        "resolved_path": rel_path,
-        "exists": "yes" if exists else "no",
-        "task": task_type
-    }
-    
+        config_content = ""
+        deploy_content = ""
+        config_path_str = ""
+        deploy_path_str = ""
+        
+        if task_type == "create":
+            # 1. Create target directory and deploy directory
+            dag_dir = target_file_path.parent
+            deploy_dir = dag_dir / "deploy"
+            dag_dir.mkdir(parents=True, exist_ok=True)
+            deploy_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 2. Generate and write config.json
+            config_data = generate_config_json(payload)
+            config_content = json.dumps(config_data, indent=2)
+            with open(target_file_path, "w") as f:
+                f.write(config_content)
+            config_path_str = str(target_file_path)
+            
+            # 3. Generate and write deploy.yml
+            deploy_yaml_path = deploy_dir / "deploy.yml"
+            deploy_content = generate_deploy_yaml(payload)
+            with open(deploy_yaml_path, "w") as f:
+                f.write(deploy_content)
+            deploy_path_str = str(deploy_yaml_path)
+            
+            # Print log messages to stderr
+            print(f"LOG: Created config.json at {rel_path}", file=sys.stderr)
+            print(f"LOG: Created deploy.yml at {dag_dir.relative_to(clone_dest)}/deploy/deploy.yml", file=sys.stderr)
+            print(f"\n--- GENERATED config.json ({rel_path}) ---", file=sys.stderr)
+            print(config_content, file=sys.stderr)
+            print(f"\n--- GENERATED deploy.yml ({dag_dir.relative_to(clone_dest)}/deploy/deploy.yml) ---", file=sys.stderr)
+            print(deploy_content, file=sys.stderr)
+            print("-------------------------------------------\n", file=sys.stderr)
+        
+        result = {
+            "resolved_path": rel_path,
+            "exists": "yes" if exists else "no",
+            "task": task_type,
+            "config_path": config_path_str,
+            "config_content": config_content,
+            "deploy_path": deploy_path_str,
+            "deploy_content": deploy_content
+        }
+        
     # Output to stdout as JSON
     print(json.dumps(result))
     
-    # Log to stderr
-    print(f"LOG: Resolved path: {rel_path}", file=sys.stderr)
-    print(f"LOG: Exists: {'yes' if exists else 'no'}", file=sys.stderr)
+    # Log decided task type to stderr
     print(f"LOG: Decided task type: {task_type}", file=sys.stderr)
 
 if __name__ == "__main__":
