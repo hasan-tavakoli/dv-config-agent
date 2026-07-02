@@ -18,7 +18,10 @@ import json
 import re
 import subprocess
 import sys
-import google.auth
+
+from dotenv import load_dotenv
+# Load local environment variables from .env if present
+load_dotenv()
 
 from google.adk.apps import App
 from google.adk.models import Gemini
@@ -26,12 +29,6 @@ from google.adk.workflow import Workflow, node
 from google.adk.events.event import Event
 from google.adk.agents.context import Context
 from google.genai import types
-
-# Initialize Google Cloud environment
-_, project_id = google.auth.default()
-os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
-os.environ["GOOGLE_CLOUD_LOCATION"] = "global"
-os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 
 # Model definition (gemini-3.1-flash-lite)
 model = Gemini(
