@@ -92,6 +92,13 @@ def test_main_create(mock_temp_dir, mock_get_token, mock_run, tmp_path):
     mock_temp_dir_instance = MagicMock()
     mock_temp_dir_instance.__enter__.return_value = str(tmp_path)
     mock_temp_dir.return_value = mock_temp_dir_instance
+
+    # Mock subprocess.run for git commands
+    mock_run_res = MagicMock()
+    mock_run_res.returncode = 0
+    mock_run_res.stdout = ""
+    mock_run_res.stderr = ""
+    mock_run.return_value = mock_run_res
     
     payload = {
         "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",
@@ -169,6 +176,13 @@ def test_main_validation_fails(mock_temp_dir, mock_get_token, mock_run, tmp_path
     mock_temp_dir_instance = MagicMock()
     mock_temp_dir_instance.__enter__.return_value = str(tmp_path)
     mock_temp_dir.return_value = mock_temp_dir_instance
+
+    # Mock subprocess.run for git commands
+    mock_run_res = MagicMock()
+    mock_run_res.returncode = 0
+    mock_run_res.stdout = ""
+    mock_run_res.stderr = ""
+    mock_run.return_value = mock_run_res
     
     payload = {
         "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",

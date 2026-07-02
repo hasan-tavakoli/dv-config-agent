@@ -19,6 +19,7 @@ import json
 import tempfile
 import subprocess
 import yaml
+import time
 from pathlib import Path
 
 # Add scripts directory to sys.path to import dbt_config_models and validate_dbt_configs
@@ -255,6 +256,7 @@ def main():
         deploy_path_str = ""
         validation_passed = True
         validation_errors = []
+        feature_branch = ""
         
         if task_type == "create":
             # 1. Create target directory and deploy directory
@@ -292,6 +294,70 @@ def main():
                 validation_passed = True
                 print("LOG: validation passed", file=sys.stderr)
                 
+                # Perform Git Checkout, Commit, and Push
+                dag_name = dag_id.replace("_", "-")
+                feature_branch = f"feature/config-{dag_name}-{int(time.time())}"
+                
+                try:
+                    # Create and checkout feature branch
+                    subprocess.run(
+                        ["git", "checkout", "-b", feature_branch],
+                        cwd=str(clone_dest),
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    
+                    # Git add
+                    subprocess.run(
+                        ["git", "add", "."],
+                        cwd=str(clone_dest),
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    
+                    # Git commit
+                    commit_msg = f"✨ feat: Add dbt DAG config for {dag_name}"
+                    subprocess.run(
+                        ["git", "commit", "-m", commit_msg],
+                        cwd=str(clone_dest),
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    
+                    # Push branch
+                    push_url = f"https://x-access-token:{token}@github.com/hasan-tavakoli/dv-platform-config.git"
+                    
+                    # Set push command remote URL securely
+                    subprocess.run(
+                        ["git", "remote", "set-url", "origin", push_url],
+                        cwd=str(clone_dest),
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    
+                    push_res = subprocess.run(
+                        ["git", "push", "origin", feature_branch],
+                        cwd=str(clone_dest),
+                        capture_output=True,
+                        text=True
+                    )
+                    if push_res.returncode != 0:
+                        err = push_res.stderr.replace(token, "********")
+                        raise RuntimeError(f"Git push failed: {err}")
+                        
+                    print(f"LOG: Successfully pushed to {feature_branch}", file=sys.stderr)
+                    
+                except Exception as exc:
+                    err_msg = str(exc).replace(token, "********")
+                    print(f"Error during git operations: {err_msg}", file=sys.stderr)
+                    validation_passed = False
+                    validation_errors.append(f"Git operation failed: {err_msg}")
+                    feature_branch = ""
+                
             # Log print details
             print(f"LOG: Created config.json at {rel_path}", file=sys.stderr)
             print(f"LOG: Created deploy.yml at {dag_dir.relative_to(clone_dest)}/deploy/deploy.yml", file=sys.stderr)
@@ -310,7 +376,8 @@ def main():
             "deploy_path": deploy_path_str,
             "deploy_content": deploy_content,
             "validation_passed": validation_passed,
-            "validation_errors": validation_errors
+            "validation_errors": validation_errors,
+            "feature_branch": feature_branch
         }
         
     # Output to stdout as JSON
