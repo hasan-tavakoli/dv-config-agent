@@ -14,6 +14,8 @@
 
 FROM python:3.12-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir uv==0.8.13
 
 WORKDIR /code
@@ -21,6 +23,7 @@ WORKDIR /code
 COPY ./pyproject.toml ./README.md ./uv.lock* ./
 
 COPY ./app ./app
+COPY ./scripts ./scripts
 
 RUN uv sync --frozen
 
