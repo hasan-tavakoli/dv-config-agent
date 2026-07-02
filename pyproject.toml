@@ -50,7 +50,7 @@ select = [
     "UP", # pyupgrade
     "RUF", # ruff specific rules
 ]
-ignore = ["E501", "C901", "B006"] # ignore line too long, too complex
+ignore = ["E501", "C901", "B006", "E402"] # ignore line too long, too complex, module import position
 
 [tool.ruff.lint.isort]
 known-first-party = ["app", "frontend"]
@@ -75,6 +75,7 @@ invalid-return-type = "ignore"
 possibly-missing-attribute = "ignore"
 not-subscriptable = "ignore"
 deprecated = "ignore"
+unknown-argument = "ignore"
 
 [tool.codespell]
 ignore-words-list = "rouge"

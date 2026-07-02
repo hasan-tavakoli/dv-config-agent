@@ -57,8 +57,9 @@ def test_agent_stream() -> None:
     assert has_text_content, "Expected at least one message with text content"
 
 
-from unittest.mock import patch, MagicMock
 import json
+from unittest.mock import MagicMock, patch
+
 
 @patch("subprocess.run")
 @patch("urllib.request.urlopen")
@@ -72,27 +73,29 @@ def test_agent_create_workflow(mock_urlopen, mock_run) -> None:
     mock_run_res = MagicMock()
     mock_run_res.returncode = 0
     # Simulate stdout JSON from check_config.py
-    mock_run_res.stdout = json.dumps({
-        "resolved_path": "dv-stage-eu/sports/dv-sports-elt/config.json",
-        "exists": "no",
-        "task": "create",
-        "config_path": "/tmp/config.json",
-        "config_content": '{"dag_configs": []}',
-        "deploy_path": "/tmp/deploy.yml",
-        "deploy_content": "name: dv-sports-elt",
-        "validation_passed": True,
-        "validation_errors": [],
-        "feature_branch": "feature/config-dv-sports-elt-12345",
-        "changes": {},
-        "task_needed": True
-    })
+    mock_run_res.stdout = json.dumps(
+        {
+            "resolved_path": "dv-stage-eu/sports/dv-sports-elt/config.json",
+            "exists": "no",
+            "task": "create",
+            "config_path": "/tmp/config.json",
+            "config_content": '{"dag_configs": []}',
+            "deploy_path": "/tmp/deploy.yml",
+            "deploy_content": "name: dv-sports-elt",
+            "validation_passed": True,
+            "validation_errors": [],
+            "feature_branch": "feature/config-dv-sports-elt-12345",
+            "changes": {},
+            "task_needed": True,
+        }
+    )
     mock_run.return_value = mock_run_res
 
     # Mock GitHub PR response
     mock_pr_response = MagicMock()
-    mock_pr_response.read.return_value = json.dumps({
-        "html_url": "https://github.com/hasan-tavakoli/dv-platform-config/pull/999"
-    }).encode("utf-8")
+    mock_pr_response.read.return_value = json.dumps(
+        {"html_url": "https://github.com/hasan-tavakoli/dv-platform-config/pull/999"}
+    ).encode("utf-8")
     mock_urlopen.return_value.__enter__.return_value = mock_pr_response
 
     payload = {
@@ -104,7 +107,7 @@ def test_agent_create_workflow(mock_urlopen, mock_run) -> None:
         "schedule": "30 0 * * *",
         "service_account": "sa@domain.com",
         "execution_project": "proj-exec",
-        "target_project": "proj-target"
+        "target_project": "proj-target",
     }
 
     message = types.Content(
@@ -119,7 +122,7 @@ def test_agent_create_workflow(mock_urlopen, mock_run) -> None:
             run_config=RunConfig(streaming_mode=StreamingMode.SSE),
         )
     )
-    
+
     # Verify that the PR was successfully created and the URL is present in the events
     pr_created = False
     for event in events:
@@ -127,7 +130,10 @@ def test_agent_create_workflow(mock_urlopen, mock_run) -> None:
             for part in event.content.parts:
                 if part.text and "PR URL:" in part.text:
                     pr_created = True
-                    assert "https://github.com/hasan-tavakoli/dv-platform-config/pull/999" in part.text
+                    assert (
+                        "https://github.com/hasan-tavakoli/dv-platform-config/pull/999"
+                        in part.text
+                    )
     assert pr_created, "Expected PR URL to be logged"
 
 
@@ -141,20 +147,22 @@ def test_agent_no_change_workflow(mock_run) -> None:
     # Mock check_config.py output showing no changes needed
     mock_run_res = MagicMock()
     mock_run_res.returncode = 0
-    mock_run_res.stdout = json.dumps({
-        "resolved_path": "dv-stage-eu/sports/dv-sports-elt/config.json",
-        "exists": "yes",
-        "task": "update",
-        "config_path": "/tmp/config.json",
-        "config_content": "",
-        "deploy_path": "/tmp/deploy.yml",
-        "deploy_content": "",
-        "validation_passed": True,
-        "validation_errors": [],
-        "feature_branch": "",
-        "changes": {},
-        "task_needed": False
-    })
+    mock_run_res.stdout = json.dumps(
+        {
+            "resolved_path": "dv-stage-eu/sports/dv-sports-elt/config.json",
+            "exists": "yes",
+            "task": "update",
+            "config_path": "/tmp/config.json",
+            "config_content": "",
+            "deploy_path": "/tmp/deploy.yml",
+            "deploy_content": "",
+            "validation_passed": True,
+            "validation_errors": [],
+            "feature_branch": "",
+            "changes": {},
+            "task_needed": False,
+        }
+    )
     mock_run.return_value = mock_run_res
 
     payload = {
@@ -166,7 +174,7 @@ def test_agent_no_change_workflow(mock_run) -> None:
         "schedule": "30 0 * * *",
         "service_account": "sa@domain.com",
         "execution_project": "proj-exec",
-        "target_project": "proj-target"
+        "target_project": "proj-target",
     }
 
     message = types.Content(
