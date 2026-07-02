@@ -154,4 +154,55 @@ def test_main_create(mock_temp_dir, mock_get_token, mock_run, tmp_path):
         assert "name: dv-sports-elt" in deploy_text
         assert "image: ghcr.io/hasan-tavakoli/dv-sports-etl:feature-add-model-daily_active_customers-1782992764-24fc831" in deploy_text
         assert "region: europe-west1" in deploy_text
+        
+        assert output_json["validation_passed"] is True
+        assert len(output_json["validation_errors"]) == 0
+
+
+@patch("subprocess.run")
+@patch("scripts.check_config.get_github_token")
+@patch("tempfile.TemporaryDirectory")
+def test_main_validation_fails(mock_temp_dir, mock_get_token, mock_run, tmp_path):
+    mock_get_token.return_value = "dummy-token"
+    
+    # Mock TemporaryDirectory context manager to point to our test tmp_path
+    mock_temp_dir_instance = MagicMock()
+    mock_temp_dir_instance.__enter__.return_value = str(tmp_path)
+    mock_temp_dir.return_value = mock_temp_dir_instance
+    
+    payload = {
+        "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",
+        "tag": "",  # Empty tag to trigger validation error
+        "domain": "sports",
+        "environment": "stage",
+        "dag_id": "dv_sports_elt",
+        "schedule": "30 0 * * *",
+        "service_account": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
+        "execution_project": "dv-dev-eu-w1-sports-elt",
+        "target_project": "dv-dev-eu-w1-sports-data"
+    }
+    
+    with patch("sys.argv", ["check_config.py", json.dumps(payload)]):
+        printed_lines = []
+        def mock_print(*args, **kwargs):
+            if args:
+                printed_lines.append(args[0])
+        
+        with patch("builtins.print", mock_print):
+            main()
+        
+        # Check output JSON
+        output_json = None
+        for line in printed_lines:
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and "resolved_path" in data:
+                    output_json = data
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        assert output_json is not None, f"Could not find valid JSON in printed lines: {printed_lines}"
+        assert output_json["validation_passed"] is False
+        assert any("deploy.yml: 'image' field must include a tag" in err for err in output_json["validation_errors"])
+
 

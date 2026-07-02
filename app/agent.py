@@ -106,12 +106,27 @@ def check_config_node(ctx: Context) -> Event:
                 f"```yaml\n{deploy_content}\n```"
             )
             
+        validation_passed = output_data.get("validation_passed", True)
+        validation_errors = output_data.get("validation_errors", [])
+        
+        route = "ok"
+        if not validation_passed:
+            route = "needs_human"
+            errors_str = "\n".join(f"- {err}" for err in validation_errors)
+            msg += (
+                f"\n\n❌ Validation Failed:\n"
+                f"{errors_str}"
+            )
+        elif task == "create":
+            msg += "\n\n✅ validation passed"
+            
         print(msg)
         
         return Event(
             output=output_data,
             content=types.Content(role='model', parts=[types.Part.from_text(text=msg)]),
-            state={"check_result": output_data}
+            state={"check_result": output_data},
+            route=route
         )
     except subprocess.CalledProcessError as e:
         err_msg = f"Error running check_config.py: {e.stderr}"

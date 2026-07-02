@@ -18,14 +18,16 @@ import sys
 import json
 import tempfile
 import subprocess
+import yaml
 from pathlib import Path
 
-# Add scripts directory to sys.path to import dbt_config_models
+# Add scripts directory to sys.path to import dbt_config_models and validate_dbt_configs
 scripts_dir = Path(__file__).resolve().parent
 if str(scripts_dir) not in sys.path:
     sys.path.insert(0, str(scripts_dir))
 
 from dbt_config_models import RootConfig, DagEntry, DagConfig, JobConfig, EnvVariables, Step
+from validate_dbt_configs import validate_file as validate_config_json
 
 def load_env(env_path: Path):
     env_vars = {}
@@ -120,7 +122,14 @@ def generate_deploy_yaml(payload: dict) -> str:
     dag_name = payload.get("dag_id").replace("_", "-")
     image = payload.get("image")
     tag = payload.get("tag")
-    full_image = f"{image}:{tag}"
+    
+    # image field must have tag, but we allow generating it from whatever tag is passed.
+    # If tag is empty/None, we don't append a ":" tag so we can test validation failure.
+    if tag:
+        full_image = f"{image}:{tag}"
+    else:
+        full_image = f"{image}"
+        
     service_account = payload.get("service_account")
     environment = payload.get("environment", "")
     region = "southamerica-east1" if "sa" in environment else "europe-west1"
@@ -137,6 +146,38 @@ resources:
     cpu: 500m
     memory: 1Gi
 """
+
+def validate_deploy_yaml(file_path: Path) -> list[str]:
+    errors = []
+    if not file_path.exists():
+        return [f"deploy.yml does not exist at {file_path}"]
+        
+    try:
+        with open(file_path, "r") as f:
+            data = yaml.safe_load(f)
+    except Exception as exc:
+        return [f"deploy.yml is invalid YAML: {exc}"]
+        
+    if not isinstance(data, dict):
+        return ["deploy.yml top-level element is not a dictionary"]
+        
+    required_fields = ["name", "image", "service_account", "region"]
+    for field in required_fields:
+        val = data.get(field)
+        if not val:
+            errors.append(f"deploy.yml: missing or empty required field '{field}'")
+        elif not isinstance(val, str) or not val.strip():
+            errors.append(f"deploy.yml: field '{field}' must be a non-empty string")
+            
+    # Check that the image contains a tag (contains ":")
+    image = data.get("image")
+    if image and isinstance(image, str):
+        if ":" not in image:
+            errors.append("deploy.yml: 'image' field must include a tag (contain ':')")
+        elif image.endswith(":"):
+            errors.append("deploy.yml: 'image' tag cannot be empty")
+            
+    return errors
 
 def main():
     # Read payload from argument or stdin
@@ -212,6 +253,8 @@ def main():
         deploy_content = ""
         config_path_str = ""
         deploy_path_str = ""
+        validation_passed = True
+        validation_errors = []
         
         if task_type == "create":
             # 1. Create target directory and deploy directory
@@ -234,7 +277,22 @@ def main():
                 f.write(deploy_content)
             deploy_path_str = str(deploy_yaml_path)
             
-            # Print log messages to stderr
+            # 4. Run validations
+            config_errors = validate_config_json(target_file_path)
+            deploy_errors = validate_deploy_yaml(deploy_yaml_path)
+            all_errors = config_errors + deploy_errors
+            
+            if all_errors:
+                validation_passed = False
+                validation_errors = all_errors
+                print("LOG: Validation failed!", file=sys.stderr)
+                for err in all_errors:
+                    print(f"LOG: - {err}", file=sys.stderr)
+            else:
+                validation_passed = True
+                print("LOG: validation passed", file=sys.stderr)
+                
+            # Log print details
             print(f"LOG: Created config.json at {rel_path}", file=sys.stderr)
             print(f"LOG: Created deploy.yml at {dag_dir.relative_to(clone_dest)}/deploy/deploy.yml", file=sys.stderr)
             print(f"\n--- GENERATED config.json ({rel_path}) ---", file=sys.stderr)
@@ -250,7 +308,9 @@ def main():
             "config_path": config_path_str,
             "config_content": config_content,
             "deploy_path": deploy_path_str,
-            "deploy_content": deploy_content
+            "deploy_content": deploy_content,
+            "validation_passed": validation_passed,
+            "validation_errors": validation_errors
         }
         
     # Output to stdout as JSON
