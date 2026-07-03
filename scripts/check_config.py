@@ -286,6 +286,35 @@ def main():
         changes = {}
         task_needed = True
 
+        # A model image-ready event must only ever UPDATE an existing DAG's config.
+        # If the target config.json doesn't exist (stale clone, unmerged prior PR,
+        # path mismatch, etc.), refuse to fabricate a full config from an image-only
+        # event — it carries no schedule/steps, so falling into "create" would either
+        # fail validation or overwrite/lose existing config. Hand off to a human instead.
+        if source == "model" and task_type == "create":
+            err_msg = (
+                f"model image-ready event for a config that doesn't exist at "
+                f"{rel_path} — refusing to create from scratch"
+            )
+            print(f"LOG: Validation failed! {err_msg}", file=sys.stderr)
+            result = {
+                "resolved_path": rel_path,
+                "exists": "no",
+                "task": task_type,
+                "config_path": config_path_str,
+                "config_content": "",
+                "deploy_path": deploy_path_str,
+                "deploy_content": "",
+                "validation_passed": False,
+                "validation_errors": [err_msg],
+                "feature_branch": "",
+                "changes": {},
+                "task_needed": True,
+            }
+            print(json.dumps(result))
+            print(f"LOG: Decided task type: {task_type}", file=sys.stderr)
+            return
+
         if task_type == "create":
             # A new DAG cannot be created without a schedule
             if not payload.get("schedule"):

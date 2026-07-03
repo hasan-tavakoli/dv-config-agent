@@ -815,11 +815,10 @@ def test_main_create_fails_without_schedule(
     mock_run_res.returncode = 0
     mock_run.return_value = mock_run_res
 
-    # Missing/empty schedule on create should fail validation
+    # Missing/empty schedule on create should fail validation (config_only source,
+    # which is still legitimately allowed to create a brand-new DAG).
     payload = {
-        "source": "model",
-        "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",
-        "tag": "new-tag",
+        "source": "config_only",
         "domain": "sports",
         "environment": "stage",
         "dag_id": "dv_sports_elt",
@@ -851,3 +850,69 @@ def test_main_create_fails_without_schedule(
         assert output_json is not None
         assert output_json["validation_passed"] is False
         assert "new DAG requires a schedule" in output_json["validation_errors"]
+
+
+@patch("subprocess.run")
+@patch("scripts.check_config.get_github_token")
+@patch("tempfile.TemporaryDirectory")
+def test_main_model_source_refuses_create_for_missing_dag(
+    mock_temp_dir, mock_get_token, mock_run, tmp_path
+):
+    mock_get_token.return_value = "dummy-token"
+
+    mock_temp_dir_instance = MagicMock()
+    mock_temp_dir_instance.__enter__.return_value = str(tmp_path)
+    mock_temp_dir.return_value = mock_temp_dir_instance
+
+    mock_run_res = MagicMock()
+    mock_run_res.returncode = 0
+    mock_run.return_value = mock_run_res
+
+    # A model image-ready event (has schedule, image, tag — everything a "create"
+    # would normally need) targeting a dag_id whose config.json does NOT exist in
+    # the freshly cloned repo. This must be refused (needs_human), never create.
+    payload = {
+        "source": "model",
+        "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",
+        "tag": "new-tag",
+        "domain": "sports",
+        "environment": "stage",
+        "dag_id": "dv_sports_elt_never_onboarded",
+        "schedule": "30 0 * * *",
+        "service_account": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
+        "execution_project": "dv-dev-eu-w1-sports-elt",
+        "target_project": "dv-dev-eu-w1-sports-data",
+    }
+
+    with patch("sys.argv", ["check_config.py", json.dumps(payload)]):
+        printed_lines = []
+
+        def mock_print(*args, **kwargs):
+            if args:
+                printed_lines.append(args[0])
+
+        with patch("builtins.print", mock_print):
+            main()
+
+        output_json = None
+        for line in printed_lines:
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and "resolved_path" in data:
+                    output_json = data
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        assert output_json is not None
+        assert output_json["validation_passed"] is False
+        assert output_json["task_needed"] is True
+        assert any(
+            "refusing to create from scratch" in err
+            for err in output_json["validation_errors"]
+        )
+        # Confirm the create branch's side effects never ran: subprocess.run was
+        # only invoked once, for the initial `git clone` — no checkout/commit/push.
+        assert output_json["config_content"] == ""
+        assert output_json["feature_branch"] == ""
+        assert output_json["changes"] == {}
+        assert mock_run.call_count == 1

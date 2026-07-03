@@ -202,6 +202,9 @@ my_env.tfvars
 # A2A Inspector
 tools/a2a-inspector/
 
+# Deploy-time metadata (churns on every deploy, timestamp-only diffs)
+deployment_metadata.json
+
 # Ignore all queue logs
 *.jsonl
 
