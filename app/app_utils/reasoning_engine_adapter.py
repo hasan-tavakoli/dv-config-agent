@@ -75,8 +75,18 @@ def attach_reasoning_engine_routes(app: FastAPI) -> None:
         method = resolve_method(body["class_method"], streaming=True)
 
         async def generator():
-            async for event in method(**(body.get("input") or {})):
-                yield json.dumps(event) + "\n"
+            result = method(**(body.get("input") or {}))
+            # Handle both async generators (e.g. async_stream_query) and
+            # plain sync generators (e.g. the deprecated stream_query).
+            if hasattr(result, "__aiter__"):
+                async for event in result:
+                    yield json.dumps(event) + "\n"
+            else:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                for event in result:
+                    yield json.dumps(event) + "\n"
+                    await asyncio.sleep(0)  # yield control back to the event loop
 
         return responses.StreamingResponse(
             content=generator(), media_type="application/json"

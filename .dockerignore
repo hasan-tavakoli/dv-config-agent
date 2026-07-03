@@ -1,0 +1,59 @@
+# Temporary git clone folders from check_config.py
+dv_platform_config_clone_*
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+.venv*/
+venv/
+env/
+
+# Test artifacts and coverage
+tests/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# Type checkers / linters
+.mypy_cache/
+.ruff_cache/
+.ty/
+
+# Secrets and local config
+.env
+*.tfvars
+
+# Editor / IDE files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Git metadata
+.git/
+.gitignore
+
+# Agent CLI and dev tooling
+.google-agents-cli/
+.agents-cli-scripts/
+.adk/
+.saved_chats
+agents-cli-manifest.yaml
+deployment_metadata.json
+
+# Docs and misc
+README.md
+*.jsonl

@@ -251,12 +251,10 @@ def main():
 
     repo_url = f"https://{token}@github.com/hasan-tavakoli/dv-platform-config.git"
 
-    # Clone to a temporary directory inside the workspace
-    workspace_dir = Path.cwd()
-
-    with tempfile.TemporaryDirectory(
-        dir=workspace_dir, prefix="dv_platform_config_clone_"
-    ) as temp_dir:
+    # Clone to a temporary directory in the system temp dir (e.g. /tmp).
+    # Using the OS temp dir (not the project dir) ensures leftover folders from
+    # failed runs never accumulate in the workspace or Docker image.
+    with tempfile.TemporaryDirectory(prefix="dv_platform_config_clone_") as temp_dir:
         clone_dest = Path(temp_dir)
 
         # Run git clone

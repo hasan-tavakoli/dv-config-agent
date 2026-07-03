@@ -204,3 +204,6 @@ tools/a2a-inspector/
 
 # Ignore all queue logs
 *.jsonl
+
+# Temporary git clone folders from check_config.py (safety net)
+dv_platform_config_clone_*
