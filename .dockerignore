@@ -55,5 +55,4 @@ agents-cli-manifest.yaml
 deployment_metadata.json
 
 # Docs and misc
-README.md
 *.jsonl
