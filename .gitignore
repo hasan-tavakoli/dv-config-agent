@@ -207,3 +207,8 @@ tools/a2a-inspector/
 
 # Temporary git clone folders from check_config.py (safety net)
 dv_platform_config_clone_*
+
+# Service account key files — NEVER commit these
+*-key.json
+*.sa.json
+*-credentials.json
