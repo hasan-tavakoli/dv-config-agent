@@ -363,6 +363,40 @@ config_pr_summarizer = LlmAgent(
 )
 
 
+def _build_pr_title(resolved_path: str, payload_str: str, task: str = "create") -> str:
+    """
+    Builds the config PR title:
+    - The conventional-commit prefix reflects create vs update: "✨ feat:" /
+      "Add" for a brand-new config, "♻️ refactor:" / "Update" for a change to
+      an existing one. `task` should be check_config.py's check_result["task"]
+      (its actual create-vs-update source of truth) - anything other than
+      exactly "update" (missing, None, an unrecognized value) defaults to the
+      create/"✨ feat: ... Add" wording, never raises.
+    - The infix prefixes with "[model] {dag_id} —" when this event
+      originated from the model path (source == "model"), so those PRs are
+      easy to tell apart from plain config_only ones at a glance.
+
+    Reads the payload defensively: an unparseable payload, a missing/non-
+    "model" source, or a missing dag_id all fall back gracefully.
+    """
+    try:
+        payload = json.loads(payload_str)
+    except Exception:
+        payload = {}
+
+    is_update = task == "update"
+    prefix = "♻️ refactor" if is_update else "✨ feat"
+    verb = "Update" if is_update else "Add"
+
+    if payload.get("source") == "model":
+        dag_id = (payload.get("dag_id") or "").strip()
+        if dag_id:
+            return f"{prefix}: [model] {dag_id} — {verb} dbt DAG config for {resolved_path}"
+        return f"{prefix}: [model] — {verb} dbt DAG config for {resolved_path}"
+
+    return f"{prefix}: {verb} dbt DAG config for {resolved_path}"
+
+
 def create_pull_request_node(
     ctx: Context, node_input: ConfigVibeDiffSummary
 ) -> Generator[Event, None, None]:
@@ -383,6 +417,8 @@ def create_pull_request_node(
     feature_branch = check_result.get("feature_branch", "")
     config_content = check_result.get("config_content", "")
     deploy_content = check_result.get("deploy_content", "")
+
+    pr_title = _build_pr_title(resolved_path, ctx.state.get("payload", ""), check_result.get("task", "create"))
 
     # Build PR Body in Markdown format
     pr_body = (
@@ -408,7 +444,7 @@ def create_pull_request_node(
         msg = (
             f"GITHUB_TOKEN not found in env. Simulating Pull Request creation.\n\n"
             f"=== PR Title ===\n"
-            f"✨ feat: Add dbt DAG config for {resolved_path}\n\n"
+            f"{pr_title}\n\n"
             f"=== PR Base/Head ===\n"
             f"Base: main\n"
             f"Head: {feature_branch}\n\n"
@@ -430,7 +466,7 @@ def create_pull_request_node(
         "Content-Type": "application/json",
     }
     payload = {
-        "title": f"✨ feat: Add dbt DAG config for {resolved_path}",
+        "title": pr_title,
         "head": feature_branch,
         "base": "main",
         "body": pr_body,
