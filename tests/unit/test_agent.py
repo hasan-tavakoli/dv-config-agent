@@ -19,11 +19,20 @@ Covers app.agent._build_pr_title:
 - the conventional-commit prefix/verb should reflect create vs update
   (check_config.py's check_result["task"]), defaulting to create wording
   when that signal is missing or unrecognized.
+
+Also covers app.agent.prepare_pr_summarizer_input: the Vibe Diff summarizer
+LLM was writing the wrong domain (inferred from the shared "dv-sports-etl"
+image repo name) and inventing "production" out of thin air. The fix states
+the real domain/environment prominently and verbatim at the top of the
+prompt, with an explicit instruction not to infer either from the image name.
 """
 
 import json
+from unittest.mock import MagicMock
 
-from app.agent import _build_pr_title
+from google.adk.agents.context import Context
+
+from app.agent import _build_pr_title, prepare_pr_summarizer_input
 
 
 def test_model_source_prefixes_title_with_dag_id():
@@ -102,3 +111,41 @@ def test_unrecognized_task_value_defaults_to_create_wording():
     title = _build_pr_title("dv-dev-eu/sports/dv-sports-elt/config.json", payload_str, task="unknown_status")
 
     assert title == "✨ feat: Add dbt DAG config for dv-dev-eu/sports/dv-sports-elt/config.json"
+
+
+def test_prepare_pr_summarizer_input_states_actual_domain_and_environment_prominently():
+    # Regression test: the summarizer used to infer "sports" from the shared
+    # "dv-sports-etl" image repo name (present in deploy_content below) even
+    # when the real domain was "analytics". The prompt must state the real
+    # domain/environment explicitly, and warn against inferring from the image.
+    ctx = MagicMock(spec=Context)
+    ctx.state = {
+        "payload": json.dumps({
+            "source": "model",
+            "domain": "analytics",
+            "environment": "stage",
+            "dag_id": "dv_analytics_elt",
+        }),
+        "check_result": {
+            "config_content": "{}",
+            "deploy_content": "image: ghcr.io/hasan-tavakoli/dv-sports-etl:main-123",
+            "task": "create",
+            "changes": {},
+        },
+    }
+
+    event = prepare_pr_summarizer_input(ctx, {})
+
+    assert "Domain: analytics" in event.output
+    assert "Environment: stage" in event.output
+    assert "do not infer the domain from the container image name" in event.output
+
+
+def test_prepare_pr_summarizer_input_handles_unparseable_payload_without_raising():
+    ctx = MagicMock(spec=Context)
+    ctx.state = {"payload": "not valid json", "check_result": {}}
+
+    event = prepare_pr_summarizer_input(ctx, {})
+
+    assert "Domain: unknown" in event.output
+    assert "Environment: unknown" in event.output

@@ -339,7 +339,19 @@ def prepare_pr_summarizer_input(ctx: Context, node_input: dict) -> Event:
     changes = check_result.get("changes", {})
     changes_str = json.dumps(changes, indent=2)
 
+    try:
+        payload = json.loads(payload_str)
+    except Exception:
+        payload = {}
+    domain = payload.get("domain", "unknown")
+    environment = payload.get("environment", "unknown")
+
     prompt = (
+        f"Domain: {domain}\n"
+        f"Environment: {environment}\n"
+        f"(These are the ONLY correct domain/environment values. Use them verbatim in "
+        f"your summary - do not infer the domain from the container image name below, "
+        f"which is a shared generic repo name reused across every domain.)\n\n"
         f"Original Request Payload:\n{payload_str}\n\n"
         f"Generated config.json:\n```json\n{config_content}\n```\n\n"
         f"Generated deploy.yml:\n```yaml\n{deploy_content}\n```\n\n"
@@ -358,7 +370,13 @@ config_pr_summarizer = LlmAgent(
         "You are an expert code reviewer. Your job is to analyze the generated config.json and "
         "deploy.yml settings relative to the original ticket intent, and produce a structured "
         "PR review summary tailored to configuration changes. Note that a CREATE task (adding a "
-        "brand-new DAG) is higher risk (typically MEDIUM or HIGH) than a simple image-only update task."
+        "brand-new DAG) is higher risk (typically MEDIUM or HIGH) than a simple image-only update task.\n\n"
+        "CRITICAL: Use ONLY the exact Domain and Environment values given at the top of the input "
+        "for your summary. Never infer the domain from the container image name (e.g. an image "
+        "named '.../dv-sports-etl' does NOT mean the domain is 'sports' - it is a shared generic "
+        "repo name used across every domain). This system only ever writes non-production "
+        "configuration - never describe the environment as 'production'; always state the actual "
+        "environment value given, whatever it is (e.g. 'stage', 'dev')."
     ),
 )
 
