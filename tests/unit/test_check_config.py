@@ -855,7 +855,111 @@ def test_main_create_fails_without_schedule(
 @patch("subprocess.run")
 @patch("scripts.check_config.get_github_token")
 @patch("tempfile.TemporaryDirectory")
-def test_main_model_source_refuses_create_for_missing_dag(
+def test_main_model_source_creates_new_dag_with_full_fields(
+    mock_temp_dir, mock_get_token, mock_run, tmp_path
+):
+    mock_get_token.return_value = "dummy-token"
+
+    mock_temp_dir_instance = MagicMock()
+    mock_temp_dir_instance.__enter__.return_value = str(tmp_path)
+    mock_temp_dir.return_value = mock_temp_dir_instance
+
+    mock_run_res = MagicMock()
+    mock_run_res.returncode = 0
+    mock_run_res.stdout = ""
+    mock_run_res.stderr = ""
+    mock_run.return_value = mock_run_res
+
+    # A model image-ready event carrying full config metadata (schedule,
+    # service account, execution/target project) for a dag_id whose
+    # config.json does NOT exist yet in the freshly cloned repo. Per the
+    # corrected design, this must now CREATE the config the same way a
+    # config_only ticket would - not refuse.
+    payload = {
+        "source": "model",
+        "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",
+        "tag": "feature-add-model-daily_revenue_summary-1783243092-07563bb",
+        "domain": "analytics",
+        "environment": "stage",
+        "dag_id": "dv_analytics_elt",
+        "schedule": "0 7 * * *",
+        "service_account": "analytics-dev@dv-dev-eu-w1-analytics-elt.iam.gserviceaccount.com",
+        "execution_project": "dv-dev-eu-w1-analytics-elt",
+        "target_project": "dv-dev-eu-w1-analytics-data",
+    }
+
+    with patch("sys.argv", ["check_config.py", json.dumps(payload)]):
+        printed_lines = []
+
+        def mock_print(*args, **kwargs):
+            if args:
+                printed_lines.append(args[0])
+
+        with patch("builtins.print", mock_print):
+            main()
+
+        output_json = None
+        for line in printed_lines:
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and "resolved_path" in data:
+                    output_json = data
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        assert output_json is not None, (
+            f"Could not find valid JSON in printed lines: {printed_lines}"
+        )
+        assert (
+            output_json["resolved_path"]
+            == "dv-stage-eu/analytics/dv-analytics-elt/config.json"
+        )
+        assert output_json["exists"] == "no"
+        assert output_json["task"] == "create"
+        assert output_json["validation_passed"] is True
+        assert output_json["validation_errors"] == []
+
+        created_config_path = (
+            tmp_path / "dv-stage-eu/analytics/dv-analytics-elt/config.json"
+        )
+        created_deploy_path = (
+            tmp_path / "dv-stage-eu/analytics/dv-analytics-elt/deploy/deploy.yml"
+        )
+        assert created_config_path.exists()
+        assert created_deploy_path.exists()
+
+        with open(created_config_path) as f:
+            config_data = json.load(f)
+        assert (
+            config_data["dag_configs"][0]["dag_config"]["dag_id"] == "dv_analytics_elt"
+        )
+        assert config_data["dag_configs"][0]["dag_config"]["schedule"] == "0 7 * * *"
+        env_vars = config_data["dag_configs"][0]["job_config"]["env_variables"]
+        assert env_vars["DBT_EXECUTION_PROJECT"] == "dv-dev-eu-w1-analytics-elt"
+        assert (
+            env_vars["DBT_IMPERSONATE_SERVICE_ACCOUNT"]
+            == "analytics-dev@dv-dev-eu-w1-analytics-elt.iam.gserviceaccount.com"
+        )
+        assert env_vars["DBT_PROJECT"] == "dv-dev-eu-w1-analytics-data"
+
+        with open(created_deploy_path) as f:
+            deploy_text = f.read()
+        assert "name: dv-analytics-elt" in deploy_text
+        assert (
+            "image: ghcr.io/hasan-tavakoli/dv-sports-etl:"
+            "feature-add-model-daily_revenue_summary-1783243092-07563bb"
+            in deploy_text
+        )
+        assert (
+            "service_account: analytics-dev@dv-dev-eu-w1-analytics-elt.iam.gserviceaccount.com"
+            in deploy_text
+        )
+
+
+@patch("subprocess.run")
+@patch("scripts.check_config.get_github_token")
+@patch("tempfile.TemporaryDirectory")
+def test_main_model_source_create_missing_schedule_still_refused(
     mock_temp_dir, mock_get_token, mock_run, tmp_path
 ):
     mock_get_token.return_value = "dummy-token"
@@ -868,20 +972,22 @@ def test_main_model_source_refuses_create_for_missing_dag(
     mock_run_res.returncode = 0
     mock_run.return_value = mock_run_res
 
-    # A model image-ready event (has schedule, image, tag — everything a "create"
-    # would normally need) targeting a dag_id whose config.json does NOT exist in
-    # the freshly cloned repo. This must be refused (needs_human), never create.
+    # A model image-ready event for a brand-new dag_id but WITHOUT a
+    # schedule. The special-case model+create guard is gone, but the
+    # generic "new DAG requires a schedule" check inside the create branch
+    # must still catch this and refuse - it's the safety net for incomplete
+    # events now, regardless of source.
     payload = {
         "source": "model",
         "image": "ghcr.io/hasan-tavakoli/dv-sports-etl",
         "tag": "new-tag",
-        "domain": "sports",
+        "domain": "analytics",
         "environment": "stage",
-        "dag_id": "dv_sports_elt_never_onboarded",
-        "schedule": "30 0 * * *",
-        "service_account": "analytics-dev@dv-dev-eu-w1-sports-elt.iam.gserviceaccount.com",
-        "execution_project": "dv-dev-eu-w1-sports-elt",
-        "target_project": "dv-dev-eu-w1-sports-data",
+        "dag_id": "dv_analytics_elt",
+        "schedule": "",
+        "service_account": "analytics-dev@dv-dev-eu-w1-analytics-elt.iam.gserviceaccount.com",
+        "execution_project": "dv-dev-eu-w1-analytics-elt",
+        "target_project": "dv-dev-eu-w1-analytics-data",
     }
 
     with patch("sys.argv", ["check_config.py", json.dumps(payload)]):
@@ -904,15 +1010,8 @@ def test_main_model_source_refuses_create_for_missing_dag(
             except (json.JSONDecodeError, TypeError):
                 continue
         assert output_json is not None
+        assert output_json["task"] == "create"
         assert output_json["validation_passed"] is False
-        assert output_json["task_needed"] is True
-        assert any(
-            "refusing to create from scratch" in err
-            for err in output_json["validation_errors"]
-        )
-        # Confirm the create branch's side effects never ran: subprocess.run was
-        # only invoked once, for the initial `git clone` — no checkout/commit/push.
+        assert "new DAG requires a schedule" in output_json["validation_errors"]
         assert output_json["config_content"] == ""
         assert output_json["feature_branch"] == ""
-        assert output_json["changes"] == {}
-        assert mock_run.call_count == 1
